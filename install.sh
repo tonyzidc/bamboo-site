@@ -230,16 +230,22 @@ mkdir -p "$INSTALL_DIR"
     | ( cd "$INSTALL_DIR" && tar -xf - ) \
     || die "Unable to copy the files into $INSTALL_DIR"
 
-chmod +x "$INSTALL_DIR/bin/bamboo-site" "$INSTALL_DIR/install.sh" 2>/dev/null || true
-if [ -d "$INSTALL_DIR/lib" ]; then
-    find "$INSTALL_DIR/lib" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
+# Normalise ownership and permissions. The source archive can carry the
+# ownership of whoever created it (installing from a macOS checkout with
+# --local would otherwise leave the tree owned by a non-existent uid), so the
+# installed copy is always root-owned and world-readable, with only the entry
+# points and helper scripts executable.
+if [ "$(id -u)" -eq 0 ]; then
+    chown -R root:root "$INSTALL_DIR" 2>/dev/null || true
 fi
-if [ -d "$INSTALL_DIR/commands" ]; then
-    find "$INSTALL_DIR/commands" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
-fi
-if [ -d "$INSTALL_DIR/tests" ]; then
-    find "$INSTALL_DIR/tests" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
-fi
+find "$INSTALL_DIR" -type d -exec chmod 0755 {} + 2>/dev/null || true
+find "$INSTALL_DIR" -type f -exec chmod 0644 {} + 2>/dev/null || true
+chmod 0755 "$INSTALL_DIR/bin/bamboo-site" "$INSTALL_DIR/install.sh" 2>/dev/null || true
+for sub in lib commands tests; do
+    if [ -d "$INSTALL_DIR/$sub" ]; then
+        find "$INSTALL_DIR/$sub" -name '*.sh' -exec chmod 0755 {} + 2>/dev/null || true
+    fi
+done
 
 mkdir -p "$BIN_DIR"
 ln -sfn "$INSTALL_DIR/bin/bamboo-site" "$BIN_DIR/bamboo-site" || die "Unable to create $BIN_DIR/bamboo-site"

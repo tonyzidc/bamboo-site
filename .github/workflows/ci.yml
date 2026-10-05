@@ -41,6 +41,16 @@ jobs:
       - name: Install the CLI from this checkout
         run: sudo ./install.sh --local --dir /opt/bamboo-site --bin-dir /usr/local/bin --no-deps --yes
 
+      - name: The installed tree is root-owned and not group-writable
+        run: |
+          owner="$(stat -c '%U:%G' /opt/bamboo-site)"
+          test "$owner" = "root:root" || { echo "::error::/opt/bamboo-site is $owner, expected root:root"; exit 1; }
+          if find /opt/bamboo-site -perm /022 -type f | grep -q .; then
+            echo "::error::installed files are group/other writable"
+            exit 1
+          fi
+          stat -c '%A %n' /opt/bamboo-site/bin/bamboo-site
+
       - name: The CLI is on PATH and runs
         run: |
           bamboo-site version
