@@ -18,3 +18,7 @@ tests/tmp/
 # Agent skills (installed locally with `npx agentic-awesome-skills`; third-party
 # content under its own licenses, see the development section of the README)
 .agents/
+
+# Local ZCode client tooling (created by the app in the workspace)
+.zcode/
+.zcodeignore
