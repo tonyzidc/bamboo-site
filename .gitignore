@@ -1,0 +1,16 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Logs and local artifacts
+*.log
+*.tmp
+*.bak
+*.bak.*
+.tmp/
+
+# Test scratch space
+tests/tmp/

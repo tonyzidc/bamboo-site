@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: lint + tests (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Syntax check and lint
+        run: make lint
+
+      - name: Test suite
+        run: make test
+
+  tests-macos:
+    name: tests (bash 3.2, macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test suite on the system bash
+        run: /bin/bash tests/run.sh
+
+  installer:
+    name: installer smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the CLI from this checkout
+        run: sudo ./install.sh --local --dir /opt/bamboo-site --bin-dir /usr/local/bin --no-deps --yes
+
+      - name: The CLI is on PATH and runs
+        run: |
+          bamboo-site version
+          bamboo-site help >/dev/null
+          # --dry-run must plan without touching the system (logs go to stderr)
+          sudo bamboo-site --dry-run install 2>&1 | grep -q '\[dry-run\]'
+          test ! -e /etc/bamboo-site/config
+
+      - name: Uninstall removes the CLI
+        run: |
+          sudo ./install.sh --uninstall --dir /opt/bamboo-site --bin-dir /usr/local/bin --yes
+          if command -v bamboo-site >/dev/null 2>&1; then
+            echo "::error::bamboo-site is still on PATH after uninstall"
+            exit 1
+          fi
+          if [ -d /opt/bamboo-site ]; then
+            echo "::error::/opt/bamboo-site still exists after uninstall"
+            exit 1
+          fi
+
+  docs:
+    name: docs sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for leftover placeholders
+        run: |
+          if grep -rn '<your-username>' --include='*.md' --include='*.sh' .; then
+            echo "::error::placeholder repository URL still present"
+            exit 1
+          fi
+          echo "no placeholders found"

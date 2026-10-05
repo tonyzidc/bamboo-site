@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+#
+# Bamboo-Site — automated Nginx & SSL manager for Ubuntu.
+#
+# Entry point. Works both from a checkout (./bin/bamboo-site) and from the
+# installed copy (/usr/local/bin/bamboo-site -> /opt/bamboo-site/bin/bamboo-site).
+
+set -Eeuo pipefail
+
+BAMBOO_PROG_NAME="${BAMBOO_PROG_NAME:-${0##*/}}"
+
+# --- locate the installation ------------------------------------------------
+
+bamboo_bin_self_dir() {
+    local src="$1" dir
+    while [ -L "$src" ]; do
+        dir="$(cd -P "$(dirname "$src")" && pwd)"
+        src="$(readlink "$src")"
+        case "$src" in
+            /*) ;;
+            *) src="$dir/$src" ;;
+        esac
+    done
+    cd -P "$(dirname "$src")" && pwd
+}
+
+_bamboo_script_dir="$(bamboo_bin_self_dir "${BASH_SOURCE[0]}")"
+BAMBOO_ROOT="${BAMBOO_ROOT:-$(dirname "$_bamboo_script_dir")}"
+export BAMBOO_ROOT
+unset _bamboo_script_dir
+
+# --- load libraries ---------------------------------------------------------
+
+for _bamboo_lib in common config os firewall workspace nginx ssl fail2ban; do
+    if [ ! -f "$BAMBOO_ROOT/lib/$_bamboo_lib.sh" ]; then
+        printf 'error: missing library: %s\n' "$BAMBOO_ROOT/lib/$_bamboo_lib.sh" >&2
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    . "$BAMBOO_ROOT/lib/$_bamboo_lib.sh"
+done
+unset _bamboo_lib
+
+if [ "$BAMBOO_TEST_MODE" = '1' ] && [ -f "$BAMBOO_ROOT/lib/testmode.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$BAMBOO_ROOT/lib/testmode.sh"
+fi
+
+for _bamboo_cmd in help install add ssl delete edit renew list; do
+    if [ -f "$BAMBOO_ROOT/commands/cmd_$_bamboo_cmd.sh" ]; then
+        # shellcheck source=/dev/null
+        . "$BAMBOO_ROOT/commands/cmd_$_bamboo_cmd.sh"
+    fi
+done
+unset _bamboo_cmd
+
+# --- cleanup and diagnostics ------------------------------------------------
+
+# Read by require_root() in lib/common.sh; exported so it is visible there.
+export BAMBOO_CURRENT_COMMAND=''
+
+bamboo_bin_cleanup() {
+    local rc=$?
+    bamboo_cleanup_tmpdir
+    bamboo_release_lock
+    return "$rc"
+}
+
+bamboo_bin_on_error() {
+    # Debug aid only: every user-facing failure already prints its own message.
+    log_debug "command failed at line $1: $2"
+    return 0
+}
+
+trap bamboo_bin_cleanup EXIT
+trap 'bamboo_bin_on_error "$LINENO" "$BASH_COMMAND"' ERR
+
+# --- argument parsing and dispatch -----------------------------------------
+
+bamboo_bin_main() {
+    local show_help=0 show_version=0
+    local -a rest=()
+    local rest_count=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run) BAMBOO_DRY_RUN=1; export BAMBOO_DRY_RUN ;;
+            -y|--yes) BAMBOO_ASSUME_YES=1; export BAMBOO_ASSUME_YES ;;
+            -v|--verbose) BAMBOO_VERBOSE=1; export BAMBOO_VERBOSE ;;
+            --no-color) BAMBOO_NO_COLOR=1; export BAMBOO_NO_COLOR ;;
+            --force) BAMBOO_FORCE=1; export BAMBOO_FORCE ;;
+            -V|--version) show_version=1 ;;
+            -h|--help) show_help=1 ;;
+            --)
+                shift
+                while [ $# -gt 0 ]; do
+                    rest+=("$1")
+                    rest_count=$((rest_count + 1))
+                    shift
+                done
+                break
+                ;;
+            # Options that belong to individual commands: pass them through.
+            --www|--no-www|--no-ssl|--keep-files|--json|--quiet|-q|--no-ufw)
+                rest+=("$1")
+                rest_count=$((rest_count + 1))
+                ;;
+            --email)
+                if [ $# -lt 2 ]; then
+                    log_error 'The --email option requires a value.'
+                    return 1
+                fi
+                rest+=("$1")
+                rest_count=$((rest_count + 1))
+                shift
+                rest+=("$1")
+                rest_count=$((rest_count + 1))
+                ;;
+            -*)
+                log_error "Unknown global option: $1"
+                log_hint "Run '$BAMBOO_PROG_NAME help' to see all options."
+                return 1
+                ;;
+            *)
+                rest+=("$1")
+                rest_count=$((rest_count + 1))
+                ;;
+        esac
+        shift
+    done
+
+    # --no-color must be applied before anything is printed.
+    bamboo_init_colors
+
+    if [ "$show_version" = '1' ]; then
+        printf '%s %s\n' "$BAMBOO_PROG_NAME" "$BAMBOO_VERSION"
+        return 0
+    fi
+
+    if [ "$rest_count" -eq 0 ]; then
+        if [ "$show_help" = '1' ]; then
+            bamboo_print_usage
+            return 0
+        fi
+        bamboo_print_usage >&2
+        return 1
+    fi
+
+    local command=''
+    local -a cmd_args=()
+    local have_args=0 j=0
+    # The first non-option argument is the command; anything else (including
+    # per-command flags written before the command) is passed to it.
+    while [ "$j" -lt "$rest_count" ]; do
+        case "${rest[$j]}" in
+            -*)
+                cmd_args+=("${rest[$j]}")
+                ;;
+            *)
+                if [ -z "$command" ]; then
+                    command="${rest[$j]}"
+                else
+                    cmd_args+=("${rest[$j]}")
+                fi
+                ;;
+        esac
+        j=$((j + 1))
+    done
+    if [ "${#cmd_args[@]}" -gt 0 ]; then
+        have_args=1
+    fi
+
+    if [ "$show_help" = '1' ]; then
+        if ! cmd_help "$command"; then
+            return 1
+        fi
+        return 0
+    fi
+
+    case "$command" in
+        version)
+            printf '%s %s\n' "$BAMBOO_PROG_NAME" "$BAMBOO_VERSION"
+            return 0
+            ;;
+        help)
+            if [ "$have_args" = '1' ]; then
+                cmd_help "${cmd_args[0]}" || return 1
+            else
+                cmd_help
+            fi
+            return 0
+            ;;
+        install|add|ssl|delete|edit|renew|list) ;;
+        *)
+            log_error "Unknown command: $command"
+            printf '\n' >&2
+            bamboo_print_usage >&2
+            return 1
+            ;;
+    esac
+
+    # Already exported above, so plain assignments keep it visible to the libs.
+    BAMBOO_CURRENT_COMMAND="$command"
+    if [ "$have_args" = '1' ]; then
+        BAMBOO_CURRENT_COMMAND="$command $(printf '%s ' "${cmd_args[@]}")"
+    fi
+
+    config_apply
+    bamboo_acquire_lock
+
+    if [ "$have_args" = '1' ]; then
+        cmd_"$command" "${cmd_args[@]}"
+    else
+        cmd_"$command"
+    fi
+}
+
+bamboo_bin_main "$@"
