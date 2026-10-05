@@ -205,6 +205,73 @@ sudo ufw status numbered
 
 ---
 
+## Swap was not created by `install`
+
+The swap step is intentionally cautious, and it says why in the install output:
+
+- **Swap already exists.** A swap partition, an existing swap file or zram all
+  count. Check with `swapon --show`.
+- **Not enough disk space.** The tool refuses to leave less than ~512 MB free.
+  Check `df -h /`, then either free space or ask for a smaller file:
+  `BAMBOO_SWAP=512M` in `/etc/bamboo-site/config`, then re-run
+  `sudo bamboo-site install`.
+- **Disabled.** `BAMBOO_SWAP=no` or `--no-swap` turns the step off; set it back
+  to `auto` to size it from RAM (capped at 8 GB).
+
+Doing it by hand is fine too — the tool leaves existing swap alone:
+
+```bash
+sudo fallocate -l 1G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+Swappiness is deliberately left at the distribution default; on a small VPS many
+operators lower it with `echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swap.conf`.
+
+---
+
+## A reboot is required after `install`
+
+`install` upgrades installed packages (which can install a new kernel) but it
+**never reboots** — that decision stays with you:
+
+```bash
+cat /var/run/reboot-required.pkgs     # what is waiting for the reboot
+uname -r                              # the kernel currently running
+sudo reboot
+```
+
+Skip the upgrade next time with `sudo bamboo-site install --no-upgrade`, or set
+`BAMBOO_OS_UPGRADE=no` in `/etc/bamboo-site/config`.
+
+If a service appears to run old code after an upgrade it usually has not been
+restarted since the package was updated:
+
+```bash
+sudo systemctl restart nginx fail2ban
+sudo bamboo-site status               # confirms everything came back healthy
+```
+
+---
+
+## Rolling back a `reinstall`
+
+`reinstall` keeps the previous version beside the current one, so the change is
+reversible:
+
+```bash
+sudo bamboo-site reinstall --rollback     # previous version back in place
+bamboo-site version                       # confirm
+```
+
+The newer copy becomes the new rollback, so `--rollback` again moves forward. A
+reinstall that fails halfway restores the previous copy automatically; the
+leftover copy sits at `/opt/bamboo-site.bak` and can be deleted once you are
+happy.
+
+---
+
 ## Certificate renewal
 
 Automatic renewal is handled by Ubuntu's `certbot.timer` plus the deploy hook
@@ -270,13 +337,20 @@ ls -l /etc/nginx/sites-enabled/
 ## Removing everything
 
 ```bash
-sudo bamboo-site delete example.com             # one site (keeps nothing)
+sudo bamboo-site delete example.com                # one site (keeps nothing)
 sudo bamboo-site delete example.com --keep-files
-sudo ./install.sh --uninstall                   # the CLI only
-sudo rm -rf /etc/bamboo-site                    # the server-wide config
+
+sudo bamboo-site uninstall                         # the CLI only
+sudo bamboo-site uninstall --purge                 # + /etc/bamboo-site and the log
+sudo bamboo-site uninstall --purge --sites --yes   # + every managed site
 ```
 
-`--uninstall` never touches `/var/www`, certificates or `/etc/bamboo-site`.
+`uninstall` never removes packages — it prints the `apt-get remove --purge …`
+line for nginx, certbot, fail2ban and ufw instead, because anything else on the
+server using them breaks as well. The program files are removed by a short-lived
+background script a second after the command returns, so `ls /opt/bamboo-site`
+shows nothing immediately afterwards. The bootstrap installer has the same
+switch: `sudo ./install.sh --uninstall`.
 
 ---
 

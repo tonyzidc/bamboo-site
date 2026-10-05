@@ -268,6 +268,10 @@ test_cli_dry_run_changes_nothing() {
     assert_file_missing "$BAMBOO_F2B_FILTERD/bamboo-scanner.conf" 'dry-run install writes no filter'
     assert_file_missing "$BAMBOO_F2B_JAILD/00-bamboo-defaults.conf" 'dry-run install writes no defaults'
     assert_file_missing "$BAMBOO_LETSENCRYPT_HOOKS/10-bamboo-nginx-reload.sh" 'dry-run install writes no hook'
+    assert_file_missing "$BAMBOO_SWAP_FILE" 'dry-run install creates no swap file'
+    assert_file_missing "$BAMBOO_FSTAB" 'dry-run install leaves fstab alone'
+    assert_not_contains "$(cat "$BAMBOO_TEST_CMD_LOG")" 'fallocate' 'dry-run install allocates nothing'
+    assert_not_contains "$(cat "$BAMBOO_TEST_CMD_LOG")" 'upgrade' 'dry-run install upgrades nothing'
     # (Only the harmless 'certbot --version' probe may appear.)
     assert_not_contains "$(cat "$BAMBOO_TEST_CMD_LOG")" 'certbot certonly' 'dry-run install issues no certificate'
     assert_not_contains "$(cat "$BAMBOO_TEST_CMD_LOG")" 'certbot renew' 'dry-run install renews nothing'
@@ -284,6 +288,45 @@ test_cli_install() {
     assert_file_exists "$BAMBOO_F2B_FILTERD/bamboo-scanner.conf" 'installs the fail2ban scanner filter'
     assert_file_exists "$BAMBOO_F2B_JAILD/00-bamboo-defaults.conf" 'installs the fail2ban defaults'
     assert_file_contains "$BAMBOO_F2B_JAILD/00-bamboo-defaults.conf" 'ignoreip' 'the defaults whitelist localhost'
+}
+
+test_cli_install_upgrades_the_os() {
+    capture "$BAMBOO_TEST_BIN" install --yes
+    assert_rc 0 "$RC" 'install exits 0'
+    assert_contains "$OUT" 'Upgrading the operating system' 'runs the upgrade step'
+    assert_file_contains "$BAMBOO_TEST_CMD_LOG" 'apt-get -y -o Dpkg::Options::=--force-confold upgrade' 'upgrades with dpkg config files preserved'
+    assert_contains "$OUT" 'Operating system upgraded' 'reports the upgrade'
+}
+
+test_cli_install_no_upgrade_flag() {
+    capture "$BAMBOO_TEST_BIN" install --yes --no-upgrade
+    assert_rc 0 "$RC" 'install --no-upgrade exits 0'
+    assert_not_contains "$(cat "$BAMBOO_TEST_CMD_LOG")" '--force-confold' 'does not run apt-get upgrade'
+    assert_contains "$OUT" 'Skipped' 'says the upgrade was skipped'
+}
+
+test_cli_install_dist_upgrade_flag() {
+    capture "$BAMBOO_TEST_BIN" install --yes --dist-upgrade
+    assert_file_contains "$BAMBOO_TEST_CMD_LOG" 'full-upgrade' '--dist-upgrade uses apt-get full-upgrade'
+}
+
+test_cli_install_up_to_date() {
+    export TEST_UPGRADE_COUNT=0
+    fresh_root
+    capture "$BAMBOO_TEST_BIN" install --yes
+    assert_rc 0 "$RC" 'install exits 0'
+    assert_contains "$OUT" 'already up to date' 'reports that nothing needs upgrading'
+    assert_not_contains "$(cat "$BAMBOO_TEST_CMD_LOG")" '--force-confold' 'runs no upgrade at all'
+}
+
+test_cli_install_reports_a_pending_reboot() {
+    export TEST_REBOOT_REQUIRED=1
+    fresh_root
+    capture "$BAMBOO_TEST_BIN" install --yes
+    assert_rc 0 "$RC" 'install still exits 0'
+    assert_contains "$OUT" 'A reboot is required' 'warns about the pending reboot'
+    assert_contains "$OUT" 'linux-image-6.8.0-test' 'names the package that wants it'
+    assert_contains "$OUT" 'never reboots' 'makes clear it will not reboot'
 }
 
 test_cli_install_firewall_order() {
@@ -458,7 +501,7 @@ test_cli_flag_order_is_flexible() {
 
 test_cli_every_command_has_help() {
     local c
-    for c in install add ssl delete edit renew list version help; do
+    for c in install add ssl delete edit renew list status reinstall uninstall version help; do
         capture "$BAMBOO_TEST_BIN" "$c" --help
         if [ "$RC" -eq 0 ]; then
             pass "help available for '$c'"

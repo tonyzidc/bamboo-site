@@ -14,7 +14,7 @@ The installer puts `bamboo-site` on your `PATH` (`/usr/local/bin/bamboo-site`,
 backed by `/opt/bamboo-site`) and offers to install the server packages for you.
 
 ```bash
-sudo bamboo-site install                              # Nginx, Certbot, Fail2ban, UFW
+sudo bamboo-site install                              # OS upgrade, swap, Nginx, Certbot, Fail2ban, UFW
 sudo bamboo-site add example.com you@example.com      # site + Nginx + jail + SSL
 sudo bamboo-site list                                 # what is running, with SSL status
 ```
@@ -87,19 +87,36 @@ Generated server blocks enable long-lived caching (up to six months, marked
 `immutable`) for images, CSS, JS, fonts and media, reduce disk I/O with
 per-domain logs, and keep the abuse-protection rules out of the hot path.
 
+### 5. Server readiness on first install
+
+- **Swap when there is none** — a RAM-sized swap file (capped at 8 GB) is created
+  when the machine has no swap at all. Existing swap (partition, file or zram) is
+  never touched, free disk space is checked first, `/etc/fstab` is backed up
+  before the entry is added and the result is validated.
+- **OS upgrade** — installed packages are upgraded *before* the stack is
+  installed, using `apt-get upgrade` (nothing is removed, `dpkg` keeps your
+  existing config files). The tool never reboots: if one is needed it tells you
+  which packages asked for it.
+- **`bamboo-site status`** — one command that answers "is this box healthy?":
+  services, ports, firewall rules, Fail2ban jails and certificate expiry, with
+  `--json` for machines and an exit code monitoring can act on.
+
 ---
 
 ## 🛠 Command reference
 
 | Command | What it does |
 |---|---|
-| `bamboo-site install` | Installs Nginx, Certbot, Fail2ban, UFW and supporting packages; enables services and the renewal hook; configures the firewall. Safe to re-run. |
+| `bamboo-site install` | Creates a swap file if the machine has none, upgrades the OS, then installs Nginx, Certbot, Fail2ban, UFW; enables services and the renewal hook; configures the firewall. Safe to re-run. |
 | `bamboo-site add <domain> [email]` | Creates the isolated workspace, generates and enables the Nginx config, creates the Fail2ban jail and issues SSL — with automatic rollback to HTTP-only if issuance fails. |
 | `bamboo-site ssl <domain>` | Issues or re-issues the certificate for an existing site and switches it to HTTPS. This is the retry command after a failed `add`. |
 | `bamboo-site delete <domain>` | Disables and removes the Nginx config, deletes the Fail2ban jail, revokes and deletes the certificate and removes the workspace. |
 | `bamboo-site edit <domain>` | Opens the site's Nginx config in your editor and validates it with `nginx -t` before reloading. |
 | `bamboo-site renew [domain]` | Renews one certificate or everything due, then finishes any site still stuck on HTTP. |
 | `bamboo-site list` | Lists managed sites with mode, certificate expiry, jail state and size (`--json`, `--quiet`). |
+| `bamboo-site status` | Health report for the whole stack: services, ports, firewall rules, jails, certificate expiry and sites. Exits non-zero when something is wrong, so it works in monitoring (`--json`, `--quiet`, `--strict`). |
+| `bamboo-site reinstall` | Replaces the CLI with the current version from GitHub (or a local checkout), keeping the previous copy for `--rollback`. |
+| `bamboo-site uninstall` | Removes the CLI. `--purge` also removes the configuration and log; `--sites` also deletes every managed site. Packages are never removed. |
 | `bamboo-site help [command]` | Usage for the tool or a single command. |
 
 Global options: `--dry-run`, `--yes`, `--force`, `--verbose`, `--no-color`,
@@ -113,6 +130,8 @@ Full details, flags and exit codes: **[docs/COMMANDS.md](docs/COMMANDS.md)**.
 - **Operating system:** Ubuntu 22.04 LTS or newer (the tool refuses to run
   elsewhere unless you pass `--force`).
 - **Privileges:** root, or a user with `sudo`.
+- **Swap:** `install` creates a swap file when the machine has none (RAM-sized,
+  capped at 8 GB, skipped when swap already exists or the disk is too small).
 - **Network & DNS:** ports **80** and **443** must be allowed in your VPS
   provider's firewall. Point the domain's A record at the server *before*
   running `add` — if you cannot yet, `add` still succeeds and leaves the site on
@@ -129,6 +148,7 @@ Full details, flags and exit codes: **[docs/COMMANDS.md](docs/COMMANDS.md)**.
 curl -sSL https://raw.githubusercontent.com/tonyzidc/bamboo-site/main/install.sh | sudo bash
 
 # 2. Install and configure the server stack
+#    (creates a swap file when the machine has none, and upgrades the OS)
 sudo bamboo-site install --email you@example.com
 
 # 3. Create a site (DNS should already point at this server)
@@ -138,6 +158,7 @@ sudo bamboo-site add example.com
 sudo -u www-data cp -r ./my-site/. /var/www/example.com/public_html/
 
 # 5. Check everything
+sudo bamboo-site status     # full health report; exits 1 when something is wrong
 sudo bamboo-site list
 ```
 
@@ -159,6 +180,9 @@ Server-wide defaults live in `/etc/bamboo-site/config` (created by `install`):
 | `BAMBOO_F2B_IGNOREIP` | Extra IPs/CIDRs Fail2ban must never ban (e.g. your office IP). |
 | `BAMBOO_CERTBOT_EXTRA_ARGS` | Extra arguments appended to every certbot invocation. |
 | `BAMBOO_PUBLIC_IP` | Override the auto-detected public IP (useful behind NAT). |
+| `BAMBOO_OS_UPGRADE` | Upgrade the OS during `install`: `auto` (default), `full`, `no`. |
+| `BAMBOO_SWAP` | Create a swap file when the machine has none: `auto` (default, RAM-sized), `no`, or a size like `1G` / `512M`. |
+| `BAMBOO_SWAP_FILE` | Swap file location (default `/swapfile`). |
 
 Values in the environment win over the config file. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for every supported variable.
@@ -187,12 +211,49 @@ concrete cause and the commands to verify it.
 git clone https://github.com/tonyzidc/bamboo-site.git
 cd bamboo-site
 
-make test     # 357 assertions, no dependencies, runs on macOS and Linux
+make test     # 585 assertions, no dependencies, runs on macOS and Linux
 make lint     # bash -n + shellcheck on every script
 make check    # both
 
-sudo ./install.sh --local    # install this checkout to /opt/bamboo-site
+sudo ./install.sh --local      # install this checkout to /opt/bamboo-site
+sudo bamboo-site reinstall --from .   # or upgrade an installed copy from here
 ```
+
+The full suite runs offline against a temporary sandbox: `reinstall` and
+`uninstall` are exercised by driving the real `install.sh` into a scratch prefix,
+so nothing in `/opt`, `/etc` or `/var/www` is touched.
+
+### Agent skills (optional)
+
+The day-to-day workflow for this repo is a 13-skill set from
+[`sickn33/agentic-awesome-skills`](https://github.com/sickn33/agentic-awesome-skills),
+matched to what this project actually is — a bash CLI that configures a Linux
+server:
+
+| Area | Skills |
+|---|---|
+| Bash and shell quality | `bash-linux`, `bash-defensive-patterns`, `shellcheck-configuration` |
+| Server-side work | `firewall-config`, `systemd-services`, `security-auditor` |
+| Testing and debugging | `systematic-debugging`, `test-fixing`, `code-review-checklist` |
+| CI and delivery | `ci-cd-and-automation`, `commit`, `changelog-automation` |
+| Documentation | `documentation-templates` |
+
+They are installed per checkout and intentionally not committed — they are
+third-party content under their own licenses, and `.agents/` is in `.gitignore`:
+
+```bash
+npx agentic-awesome-skills@18.15.0 --path .agents/skills --skills \
+  bash-linux,bash-defensive-patterns,shellcheck-configuration,\
+firewall-config,systemd-services,security-auditor,\
+systematic-debugging,test-fixing,code-review-checklist,\
+ci-cd-and-automation,commit,changelog-automation,documentation-templates
+```
+
+Deliberately left out: the offensive-security skills (privilege escalation, web
+and cloud penetration testing) — they are not needed to build or maintain this
+tool, and running them against a server belongs in an explicitly authorized
+engagement — plus the container/Kubernetes/IaaS skills, since this project has no
+such stack.
 
 The whole test suite runs against a temporary fake root with the external
 commands stubbed (`BAMBOO_TEST_MODE=1`), so you do not need nginx, certbot or

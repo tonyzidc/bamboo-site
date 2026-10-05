@@ -14,3 +14,7 @@ Thumbs.db
 
 # Test scratch space
 tests/tmp/
+
+# Agent skills (installed locally with `npx agentic-awesome-skills`; third-party
+# content under its own licenses, see the development section of the README)
+.agents/

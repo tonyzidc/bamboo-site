@@ -72,6 +72,88 @@ bamboo_apt_install() {
     return 0
 }
 
+apt_upgrade_count() {
+    # How many packages apt would upgrade right now (0 when up to date).
+    local out=''
+    out="$(bamboo_apt_get -s upgrade 2>/dev/null | awk '/^Inst /{ n++ } END { print n + 0 }')" || out='0'
+    case "$out" in
+        ''|*[!0-9]*) out='0' ;;
+    esac
+    printf '%s' "$out"
+    return 0
+}
+
+os_upgrade() {
+    # os_upgrade <auto|upgrade|full|no>
+    #
+    # Upgrades installed packages before anything else is installed. Deliberately
+    # conservative: `apt-get upgrade` never removes packages, dpkg keeps the
+    # maintainer's config files (--force-confold) and needrestart is told to only
+    # list services (NEEDRESTART_MODE=l, set in the apt wrapper) so nothing is
+    # restarted behind the operator's back. The tool never reboots.
+    local mode="${1:-auto}" count='' kernel_before='' kernel_after='' free_mb=''
+
+    log_step 'Upgrading the operating system'
+    case "$mode" in
+        no|off|none)
+            log_info 'Skipped (BAMBOO_OS_UPGRADE=no or --no-upgrade).'
+            return 0
+            ;;
+        full|dist) mode='full-upgrade' ;;
+        auto|yes|on|'') mode='upgrade' ;;
+        *)
+            log_warn "Unrecognised upgrade mode '$mode'; using 'upgrade'."
+            mode='upgrade'
+            ;;
+    esac
+
+    free_mb="$(bamboo_disk_free_mb /)"
+    if [ -n "$free_mb" ] && [ "$free_mb" -lt 250 ]; then
+        log_warn "Only ${free_mb}MB free on /; skipping the OS upgrade."
+        log_hint 'Free some space and re-run: sudo bamboo-site install'
+        return 0
+    fi
+
+    count="$(apt_upgrade_count)"
+    if [ "$count" = '0' ]; then
+        log_ok 'The operating system is already up to date.'
+        return 0
+    fi
+    if bamboo_is_dry_run; then
+        log_info "[dry-run] would run: apt-get -y $mode ($count package(s) upgradable)"
+        return 0
+    fi
+
+    kernel_before="$(uname -r)"
+    log_info "Upgrading $count package(s) with apt-get -y $mode (this can take a few minutes) ..."
+    if ! bamboo_apt_get -y -o Dpkg::Options::=--force-confold "$mode"; then
+        log_warn 'apt-get failed; continuing with the existing package versions.'
+        log_hint 'Inspect with: sudo apt-get -f install && sudo apt-get upgrade'
+        return 0
+    fi
+    kernel_after="$(uname -r)"
+    log_ok "Operating system upgraded ($count package(s))."
+    if [ "$kernel_before" != "$kernel_after" ]; then
+        log_info "A newer kernel is installed; it takes effect after the next reboot (this tool never reboots)."
+    fi
+    return 0
+}
+
+report_reboot_status() {
+    # Called at the end of install: package work may have installed a new kernel.
+    if ! bamboo_reboot_required; then
+        return 0
+    fi
+    local pkgs=''
+    pkgs="$(bamboo_reboot_required_pkgs)"
+    log_warn 'A reboot is required to finish applying updates.'
+    if [ -n "$pkgs" ]; then
+        log_info "Waiting on: $pkgs"
+    fi
+    log_hint 'The tool never reboots for you — schedule it yourself, e.g.: sudo reboot'
+    return 0
+}
+
 bamboo_timer_enable() {
     local timer="$1"
     if bamboo_is_dry_run; then
@@ -137,6 +219,9 @@ os_install_core() {
 
     log_step 'Checking the operating system'
     require_ubuntu "$force"
+
+    swap_ensure
+    os_upgrade "$BAMBOO_OS_UPGRADE"
 
     log_step 'Installing server packages'
     bamboo_apt_update

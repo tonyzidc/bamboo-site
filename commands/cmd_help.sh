@@ -17,6 +17,9 @@ Commands:
   edit <domain>           Edit the site's Nginx config (validated on save)
   renew [domain]          Renew certificates and finish pending HTTPS setups
   list                    List managed sites and their SSL status
+  status                  Health report for the whole stack (exit 1 on problems)
+  reinstall               Reinstall/upgrade the CLI (with --rollback)
+  uninstall               Remove the CLI (--purge, --sites)
   version                 Print the version
   help [command]          Show help for a command
 
@@ -50,6 +53,9 @@ cmd_help() {
         edit) cmd_edit_usage ;;
         renew) cmd_renew_usage ;;
         list) cmd_list_usage ;;
+        status) cmd_status_usage ;;
+        reinstall) cmd_reinstall_usage ;;
+        uninstall) cmd_uninstall_usage ;;
         version) printf 'Usage: %s version\n\nPrints the installed version.\n' "$BAMBOO_PROG_NAME" ;;
         help) printf 'Usage: %s help [command]\n\nShows the general help, or detailed help for one command.\n' "$BAMBOO_PROG_NAME" ;;
         *)

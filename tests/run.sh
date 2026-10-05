@@ -37,7 +37,7 @@ export BAMBOO_TEST_PUBLIC_IP='203.0.113.10'
 
 # The CLI already ships its own test seam; load the same libraries in-process so
 # individual functions can be tested directly.
-for _lib in common config os firewall workspace nginx ssl fail2ban testmode; do
+for _lib in common config os firewall workspace nginx ssl fail2ban swap testmode; do
     # shellcheck source=/dev/null
     . "$BAMBOO_ROOT/lib/$_lib.sh"
 done
@@ -67,6 +67,12 @@ fresh_root() {
     export BAMBOO_F2B_FILTERD="$BAMBOO_F2B_DIR/filter.d"
     export BAMBOO_LOG_FILE="$TEST_ROOT/var/log/bamboo-site.log"
     export BAMBOO_LOCK_FILE="$TEST_ROOT/var/lock/bamboo-site.lock"
+    # The lifecycle commands must never touch the real installation.
+    export BAMBOO_INSTALL_DIR="$TEST_ROOT/opt/bamboo-site"
+    export BAMBOO_BIN_DIR="$TEST_ROOT/usr/local/bin"
+    export BAMBOO_SWAP_FILE="$TEST_ROOT/swapfile"
+    export BAMBOO_FSTAB="$TEST_ROOT/etc/fstab"
+    export BAMBOO_REBOOT_REQUIRED_FILE="$TEST_ROOT/run/reboot-required"
     export BAMBOO_TEST_CMD_LOG="$TEST_ROOT/cmd.log"
     export BAMBOO_TEST_NGINX_TEST_FAIL_FILE="$TEST_ROOT/nginx-test-fail"
     export BAMBOO_TEST_F2B_FAIL_FILE="$TEST_ROOT/f2b-fail"
@@ -83,6 +89,24 @@ fresh_root() {
     fi
     export BAMBOO_TEST_CERTBOT_RESULT="${TEST_CERTBOT_RESULT:-0}"
     export BAMBOO_TEST_CERTBOT_OUTPUT="${TEST_CERTBOT_OUTPUT:-}"
+
+    # The TEST_* inputs are the per-test knobs; the BAMBOO_TEST_* values are what
+    # the stubs read (same convention as TEST_DNS_A / BAMBOO_TEST_DNS_A).
+    export BAMBOO_TEST_SWAP_ACTIVE="${TEST_SWAP_ACTIVE:-}"
+    export BAMBOO_TEST_RAM_MB="${TEST_RAM_MB:-2048}"
+    export BAMBOO_TEST_DISK_FREE_MB="${TEST_DISK_FREE_MB:-20480}"
+    export BAMBOO_TEST_DISK_TOTAL_MB="${TEST_DISK_TOTAL_MB:-40960}"
+    export BAMBOO_TEST_UPGRADE_COUNT="${TEST_UPGRADE_COUNT:-3}"
+    export BAMBOO_TEST_REBOOT_REQUIRED="${TEST_REBOOT_REQUIRED:-0}"
+    export BAMBOO_TEST_SERVICES_ACTIVE="${TEST_SERVICES_ACTIVE:-}"
+    export BAMBOO_TEST_SERVICES_ENABLED="${TEST_SERVICES_ENABLED:-}"
+    export BAMBOO_TEST_OPEN_PORTS="${TEST_OPEN_PORTS:-80 443}"
+    export BAMBOO_TEST_F2B_JAILS="${TEST_F2B_JAILS:-sshd}"
+    export BAMBOO_TEST_F2B_BANNED="${TEST_F2B_BANNED:-0}"
+    export BAMBOO_TEST_UFW_ACTIVE="${TEST_UFW_ACTIVE:-0}"
+    export BAMBOO_TEST_UFW_RULES="${TEST_UFW_RULES:-22/tcp 80/tcp 443/tcp}"
+    export BAMBOO_TEST_FALLOCATE_FAIL="${TEST_FALLOCATE_FAIL:-0}"
+    export BAMBOO_TEST_CERT_DAYS="${TEST_CERT_DAYS:-90}"
 
     mkdir -p "$BAMBOO_WWW_DIR" "$BAMBOO_ETC_DIR" "$TEST_ROOT/var/log"
     : >"$BAMBOO_TEST_CMD_LOG"
@@ -225,6 +249,26 @@ run_test() {
     TEST_NO_DNS=0
     TEST_CERTBOT_RESULT=''
     TEST_CERTBOT_OUTPUT=''
+    TEST_SWAP_ACTIVE=''
+    TEST_RAM_MB=''
+    TEST_DISK_FREE_MB=''
+    TEST_DISK_TOTAL_MB=''
+    TEST_UPGRADE_COUNT=''
+    TEST_REBOOT_REQUIRED=''
+    TEST_SERVICES_ACTIVE=''
+    TEST_SERVICES_ENABLED=''
+    TEST_OPEN_PORTS=''
+    TEST_F2B_JAILS=''
+    TEST_F2B_BANNED=''
+    TEST_UFW_ACTIVE=''
+    TEST_UFW_RULES=''
+    TEST_FALLOCATE_FAIL=''
+    TEST_CERT_DAYS=''
+    # Config-backed globals that tests mutate directly (read by the libraries).
+    # shellcheck disable=SC2034
+    BAMBOO_SWAP='auto'
+    # shellcheck disable=SC2034
+    BAMBOO_OS_UPGRADE='auto'
     fresh_root
     "$fn"
     return 0

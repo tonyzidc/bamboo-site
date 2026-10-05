@@ -14,7 +14,16 @@ config file. Safe to re-run.
 Options:
   --email <address>  Store a default Let's Encrypt contact email.
   --no-ufw           Install packages but leave the firewall untouched.
+  --no-upgrade       Skip the automatic operating-system upgrade.
+  --dist-upgrade     Use apt-get full-upgrade instead of upgrade.
+  --upgrade          Force the OS upgrade on (the default).
+  --no-swap          Do not create a swap file, even when none exists.
   -h, --help         Show this help.
+
+Steps: verify the OS, create a swap file if the machine has none, upgrade
+installed packages (never removing any, never rebooting), install the server
+packages, enable services, configure Fail2ban and Nginx zones, configure the
+firewall, then write the default configuration.
 
 Global options:
   --dry-run          Show what would change, touch nothing.
@@ -30,6 +39,10 @@ EOF
 cmd_install() {
     local skip_ufw=0 email=''
     while [ $# -gt 0 ]; do
+        # The upgrade/swap values assigned below are read by os_install_core()
+        # (lib/os.sh) and swap_ensure() (lib/swap.sh): global by design, the
+        # same way --force sets BAMBOO_FORCE.
+        # shellcheck disable=SC2034
         case "$1" in
             --email)
                 [ $# -ge 2 ] || die 'install: --email requires a value.'
@@ -37,6 +50,10 @@ cmd_install() {
                 shift
                 ;;
             --no-ufw) skip_ufw=1 ;;
+            --upgrade) BAMBOO_OS_UPGRADE='upgrade' ;;
+            --no-upgrade) BAMBOO_OS_UPGRADE='no' ;;
+            --dist-upgrade) BAMBOO_OS_UPGRADE='full' ;;
+            --no-swap) BAMBOO_SWAP='no' ;;
             -h|--help) cmd_install_usage; return 0 ;;
             *) die "install: unknown option '$1'. See '$BAMBOO_PROG_NAME help install'." ;;
         esac
@@ -56,6 +73,8 @@ cmd_install() {
         config_set BAMBOO_DEFAULT_EMAIL "$email"
         log_ok "Default Let's Encrypt email stored: $email"
     fi
+
+    report_reboot_status
 
     log_step 'Installed components'
     bamboo_print_versions

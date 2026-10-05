@@ -31,7 +31,7 @@ unset _bamboo_script_dir
 
 # --- load libraries ---------------------------------------------------------
 
-for _bamboo_lib in common config os firewall workspace nginx ssl fail2ban; do
+for _bamboo_lib in common config os firewall workspace nginx ssl fail2ban swap; do
     if [ ! -f "$BAMBOO_ROOT/lib/$_bamboo_lib.sh" ]; then
         printf 'error: missing library: %s\n' "$BAMBOO_ROOT/lib/$_bamboo_lib.sh" >&2
         exit 1
@@ -46,7 +46,7 @@ if [ "$BAMBOO_TEST_MODE" = '1' ] && [ -f "$BAMBOO_ROOT/lib/testmode.sh" ]; then
     . "$BAMBOO_ROOT/lib/testmode.sh"
 fi
 
-for _bamboo_cmd in help install add ssl delete edit renew list; do
+for _bamboo_cmd in help install add ssl delete edit renew list status reinstall uninstall; do
     if [ -f "$BAMBOO_ROOT/commands/cmd_$_bamboo_cmd.sh" ]; then
         # shellcheck source=/dev/null
         . "$BAMBOO_ROOT/commands/cmd_$_bamboo_cmd.sh"
@@ -101,13 +101,14 @@ bamboo_bin_main() {
                 break
                 ;;
             # Options that belong to individual commands: pass them through.
-            --www|--no-www|--no-ssl|--keep-files|--json|--quiet|-q|--no-ufw)
+            --www|--no-www|--no-ssl|--keep-files|--json|--quiet|-q|--no-ufw|--strict|\
+            --upgrade|--no-upgrade|--dist-upgrade|--no-swap|--rollback|--sites|--purge)
                 rest+=("$1")
                 rest_count=$((rest_count + 1))
                 ;;
-            --email)
+            --email|--from|--repo|--branch)
                 if [ $# -lt 2 ]; then
-                    log_error 'The --email option requires a value.'
+                    log_error "The $1 option requires a value."
                     return 1
                 fi
                 rest+=("$1")
@@ -190,7 +191,7 @@ bamboo_bin_main() {
             fi
             return 0
             ;;
-        install|add|ssl|delete|edit|renew|list) ;;
+        install|add|ssl|delete|edit|renew|list|status|reinstall|uninstall) ;;
         *)
             log_error "Unknown command: $command"
             printf '\n' >&2

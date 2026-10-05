@@ -26,9 +26,10 @@ lib/nginx.sh           config generation, symlink wiring, nginx -t, rollback
 lib/ssl.sh             certbot lifecycle, www detection, DNS preflight, fallback
 lib/fail2ban.sh        per-domain jails, shared filter/defaults, reload
 lib/firewall.sh        UFW rules with an SSH-lockout guard
+lib/swap.sh            detects existing swap, creates and persists a swap file
 lib/testmode.sh        test-only stubs, loaded last when BAMBOO_TEST_MODE=1
 commands/cmd_*.sh      one file per command (install, add, ssl, delete, edit,
-                       renew, list, help)
+                       renew, list, status, reinstall, uninstall, help)
 templates/*.tpl        static files with @TOKEN@ placeholders
 tests/                 dependency-free harness + suite
 ```
@@ -224,6 +225,12 @@ operator out. The detected ports are printed before the confirmation prompt.
 | `--dry-run` | `bamboo_run`, and early returns in every mutating helper | Accidental changes during a rehearsal. |
 | Non-interactive safety | `bamboo_confirm` | Hanging in a pipeline; it refuses rather than assuming "yes". |
 | SSH rule before `ufw enable` | `fw_configure` | Self-inflicted lockout. |
+| Disk-space guard before creating swap | `swap_ensure` | Filling the root filesystem with a swap file. |
+| `/etc/fstab` backed up, entry appended once, validated with `findmnt --verify` | `swap_add_to_fstab` | A broken fstab stopping the server from booting. |
+| `--force-confold` + `NEEDRESTART_MODE=l`, and never rebooting | `os_upgrade` | dpkg prompts, clobbered config files, or a surprise service restart during an upgrade. |
+| Install directory asserted and shape-checked before deletion | `bamboo_assert_safe_install_dir`, `cmd_uninstall` | Deleting something that is not our installation. |
+| Staged copy verified (`BAMBOO_ROOT` pinned) before replacing the live one, automatic restore on failure | `cmd_reinstall` | Installing a broken or half-copied version. |
+| Program files removed by a detached one-shot script | `bamboo_schedule_tree_removal` | A running CLI deleting the tree it is still reading. |
 | Certbot is the only writer under `/etc/letsencrypt` | `lib/ssl.sh` | Corrupting Certbot's own bookkeeping. |
 
 ## Path and environment overrides
@@ -248,6 +255,15 @@ makes the suite able to run against a temporary root.
 | `BAMBOO_LOCK_FILE` | `/var/lock/bamboo-site.lock` | Concurrency lock. |
 | `BAMBOO_WEB_USER` / `_WEB_GROUP` / `_LOG_GROUP` | `www-data` / `www-data` / `adm` | Ownership of content and logs. |
 | `BAMBOO_MAX_BODY_SIZE` | `64m` | `client_max_body_size` for new sites. |
+| `BAMBOO_OS_UPGRADE` | `auto` | Upgrade the OS during `install` (`auto`/`full`/`no`). |
+| `BAMBOO_SWAP` | `auto` | Swap policy: `auto` (RAM-sized), `no`, or `512M`/`1G`. |
+| `BAMBOO_SWAP_FILE` | `/swapfile` | Where the swap file is created. |
+| `BAMBOO_SWAP_MAX_MB` | `8192` | Cap for `BAMBOO_SWAP=auto`. |
+| `BAMBOO_SWAP_MIN_FREE_MB` | `512` | Free space that must remain after creating swap. |
+| `BAMBOO_FSTAB` | `/etc/fstab` | fstab used for swap persistence (overridable for tests). |
+| `BAMBOO_INSTALL_DIR` / `BAMBOO_BIN_DIR` | `/opt/bamboo-site` / `/usr/local/bin` | Where `reinstall`/`uninstall` operate. |
+| `BAMBOO_BRANCH` | `main` | Branch that `reinstall` downloads. |
+| `BAMBOO_REBOOT_REQUIRED_FILE` | `/var/run/reboot-required` | Reboot marker read by `install`/`status`. |
 | `BAMBOO_SSL_WWW` | `auto` | `www` inclusion default (`auto`/`yes`/`no`). |
 | `BAMBOO_DEFAULT_EMAIL` | empty | Let's Encrypt contact. |
 | `BAMBOO_CERTBOT_EXTRA_ARGS` | empty | Extra certbot flags. |
@@ -275,7 +291,7 @@ on Ubuntu. Two things make that possible:
    `lib/common.sh` (`bamboo_systemctl`, `bamboo_nginx_bin`, `bamboo_certbot`,
    `bamboo_f2b_client`, `bamboo_ufw`, `bamboo_apt_get`, `bamboo_own`,
    `bamboo_chmod`, `bamboo_pkg_installed`, `bamboo_dns_a`, `bamboo_public_ip`,
-   …). `lib/testmode.sh` is sourced last when `BAMBOO_TEST_MODE=1` and replaces
+   `bamboo_swapon`, `bamboo_mkswap`, `bamboo_fallocate`, `bamboo_dd`, …). `lib/testmode.sh` is sourced last when `BAMBOO_TEST_MODE=1` and replaces
    them with stubs that log their invocations to `$BAMBOO_TEST_CMD_LOG`, so
    tests can assert *that* a reload or a certbot call happened without owning a
    server.
@@ -292,12 +308,20 @@ the smart-fallback path is tested without a network.
 `--dry-run` is tested separately from test mode: `test_dry_run_writes_nothing`
 asserts that no file, log entry or symlink appears at all.
 
-The suite currently has 357 assertions covering domain validation and traversal
+The suite currently has 585 assertions covering domain validation and traversal
 rejection, template rendering, config generation for both modes, symlink wiring,
 rollback on a failed `nginx -t`, mode switching, certificate detection and SAN
-parsing, the DNS preflight, the fallback contract, jail rendering, firewall
-ordering (SSH before `enable`), and a full `add → list → ssl → delete` lifecycle
-through the real binary.
+parsing, the DNS preflight, the fallback contract, jail rendering (bundled filters
+and the rejected-jail quarantine), firewall ordering (SSH before `enable`), swap
+sizing/creation/persistence with its guards, the install-time OS upgrade, every
+`status` check and its exit-code contract, the reinstall/rollback path, uninstall
+at all three levels, and a full `add → list → ssl → delete` lifecycle through the
+real binary.
+
+`tests/test_lifecycle.sh` is worth singling out: it runs the **real**
+`install.sh --local` against a sandboxed prefix (`BAMBOO_INSTALL_DIR` and
+`BAMBOO_BIN_DIR` are overridden by `fresh_root`), so `reinstall` and `uninstall`
+are exercised exactly as a server would run them — no installer double.
 
 ## Compatibility notes
 

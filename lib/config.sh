@@ -7,7 +7,7 @@
 # win over the file; the file wins over the built-in defaults in common.sh.
 # `install` creates it; every command reads it.
 
-BAMBOO_CONFIG_KEYS='BAMBOO_DEFAULT_EMAIL BAMBOO_SSL_WWW BAMBOO_MAX_BODY_SIZE BAMBOO_F2B_IGNOREIP BAMBOO_CERTBOT_EXTRA_ARGS BAMBOO_PUBLIC_IP'
+BAMBOO_CONFIG_KEYS='BAMBOO_DEFAULT_EMAIL BAMBOO_SSL_WWW BAMBOO_MAX_BODY_SIZE BAMBOO_F2B_IGNOREIP BAMBOO_CERTBOT_EXTRA_ARGS BAMBOO_PUBLIC_IP BAMBOO_OS_UPGRADE BAMBOO_SWAP BAMBOO_SWAP_FILE'
 
 config_get() {
     # config_get <KEY> — prints the stored value (empty when unset).
@@ -53,6 +53,9 @@ BAMBOO_MAX_BODY_SIZE=64m
 BAMBOO_F2B_IGNOREIP=
 BAMBOO_CERTBOT_EXTRA_ARGS=
 BAMBOO_PUBLIC_IP=
+BAMBOO_OS_UPGRADE=auto
+BAMBOO_SWAP=auto
+BAMBOO_SWAP_FILE=/swapfile
 EOF
 )"
     if [ ! -f "$BAMBOO_CONFIG_FILE" ]; then
@@ -70,6 +73,9 @@ EOF
             printf '# BAMBOO_F2B_IGNOREIP        Extra IPs/CIDRs never banned, space separated.\n'
             printf '# BAMBOO_CERTBOT_EXTRA_ARGS  Extra arguments appended to every certbot run.\n'
             printf '# BAMBOO_PUBLIC_IP           Override the auto-detected public IP.\n'
+            printf '# BAMBOO_OS_UPGRADE          Upgrade the OS during install: auto | full | no\n'
+            printf '# BAMBOO_SWAP                Create a swap file when there is none: auto | no | 1G | 512M\n'
+            printf '# BAMBOO_SWAP_FILE           Swap file path (default /swapfile).\n'
             printf '\n'
             printf '%s\n' "$defaults"
         } | atomic_write "$BAMBOO_CONFIG_FILE"
@@ -113,6 +119,18 @@ config_apply() {
     if [ -z "$BAMBOO_PUBLIC_IP" ]; then
         value="$(config_get BAMBOO_PUBLIC_IP)"
         [ -n "$value" ] && BAMBOO_PUBLIC_IP="$value"
+    fi
+    if [ -z "$BAMBOO_OS_UPGRADE_ENV" ]; then
+        value="$(config_get BAMBOO_OS_UPGRADE)"
+        [ -n "$value" ] && BAMBOO_OS_UPGRADE="$value"
+    fi
+    if [ -z "$BAMBOO_SWAP_ENV" ]; then
+        value="$(config_get BAMBOO_SWAP)"
+        [ -n "$value" ] && BAMBOO_SWAP="$value"
+    fi
+    if [ -z "$BAMBOO_SWAP_FILE_ENV" ]; then
+        value="$(config_get BAMBOO_SWAP_FILE)"
+        [ -n "$value" ] && BAMBOO_SWAP_FILE="$value"
     fi
     return 0
 }

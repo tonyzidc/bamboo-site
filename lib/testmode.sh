@@ -18,7 +18,22 @@ bamboo_test_record() {
 }
 
 bamboo_need_cmd() { return 0; }
-bamboo_service_is_active() { return 1; }
+
+bamboo_service_is_active() {
+    local svc="$1" s
+    for s in ${BAMBOO_TEST_SERVICES_ACTIVE:-}; do
+        [ "$s" = "$svc" ] && return 0
+    done
+    return 1
+}
+
+bamboo_service_is_enabled() {
+    local svc="$1" s
+    for s in ${BAMBOO_TEST_SERVICES_ENABLED:-}; do
+        [ "$s" = "$svc" ] && return 0
+    done
+    return 1
+}
 
 bamboo_own() {
     bamboo_test_record "chown $*"
@@ -89,6 +104,12 @@ bamboo_ufw() {
         *' status '*)
             if [ "${BAMBOO_TEST_UFW_ACTIVE:-0}" = "1" ]; then
                 printf 'Status: active\n'
+                printf 'To                         Action      From\n'
+                printf -- '--                         ------      ----\n'
+                local rule
+                for rule in ${BAMBOO_TEST_UFW_RULES:-22/tcp 80/tcp 443/tcp}; do
+                    printf '%-27s ALLOW       Anywhere\n' "$rule"
+                done
             else
                 printf 'Status: inactive\n'
             fi
@@ -113,9 +134,56 @@ bamboo_f2b_client() {
             return 0
             ;;
         *' --version '*) printf 'Fail2Ban v0.11.2\n' ;;
+        *' status '*)
+            if [ "$#" -eq 1 ]; then
+                printf 'Status\n'
+                printf '|- Number of jail:\t1\n'
+                printf '\`- Jail list:\t%s\n' "${BAMBOO_TEST_F2B_JAILS:-sshd}"
+            else
+                printf 'Status for the jail: %s\n' "$2"
+                printf '|- Filter\n|  |- Currently banned:\t%s\n' "${BAMBOO_TEST_F2B_BANNED:-0}"
+            fi
+            ;;
     esac
     return 0
 }
+
+# --- swap / system probes ---------------------------------------------------
+
+bamboo_swapon() { bamboo_test_record "swapon $*"; return 0; }
+bamboo_swapoff() { bamboo_test_record "swapoff $*"; return 0; }
+bamboo_mkswap() { bamboo_test_record "mkswap $*"; return 0; }
+
+bamboo_fallocate() {
+    bamboo_test_record "fallocate $*"
+    [ "${BAMBOO_TEST_FALLOCATE_FAIL:-0}" = "1" ] && return 1
+    return 0
+}
+
+bamboo_dd() { bamboo_test_record "dd $*"; return 0; }
+
+bamboo_swap_active() { printf '%s' "${BAMBOO_TEST_SWAP_ACTIVE:-}"; return 0; }
+bamboo_mem_total_mb() { printf '%s' "${BAMBOO_TEST_RAM_MB:-2048}"; return 0; }
+bamboo_disk_free_mb() { printf '%s' "${BAMBOO_TEST_DISK_FREE_MB:-20480}"; return 0; }
+bamboo_disk_total_mb() { printf '%s' "${BAMBOO_TEST_DISK_TOTAL_MB:-40960}"; return 0; }
+bamboo_uptime_human() { printf '1d 2h 3m'; return 0; }
+
+bamboo_reboot_required() { [ "${BAMBOO_TEST_REBOOT_REQUIRED:-0}" = "1" ]; }
+
+bamboo_reboot_required_pkgs() {
+    [ "${BAMBOO_TEST_REBOOT_REQUIRED:-0}" = "1" ] && printf 'linux-image-6.8.0-test'
+    return 0
+}
+
+bamboo_port_listening() {
+    local port="$1" p
+    for p in ${BAMBOO_TEST_OPEN_PORTS:-80 443}; do
+        [ "$p" = "$port" ] && return 0
+    done
+    return 1
+}
+
+apt_upgrade_count() { printf '%s' "${BAMBOO_TEST_UPGRADE_COUNT:-3}"; return 0; }
 
 ssl_test_generate_selfsigned() {
     # ssl_test_generate_selfsigned <cn> <space separated names> <directory>
@@ -139,7 +207,7 @@ ssl_test_generate_selfsigned() {
         printf 'basicConstraints = CA:FALSE\n'
     } >"$cfg" || return 1
     mkdir -p "$dir" || return 1
-    if openssl req -x509 -newkey rsa:2048 -nodes -days 90 \
+    if openssl req -x509 -newkey rsa:2048 -nodes -days "${BAMBOO_TEST_CERT_DAYS:-90}" \
         -keyout "$dir/privkey.pem" -out "$dir/fullchain.pem" -config "$cfg" >/dev/null 2>&1; then
         cp "$dir/fullchain.pem" "$dir/cert.pem"
         cp "$dir/fullchain.pem" "$dir/chain.pem"

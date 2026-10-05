@@ -34,6 +34,15 @@ fw_is_active() {
     esac
 }
 
+ufw_rule_present() {
+    # True when `ufw status` shows an ALLOW rule for the given TCP port.
+    local port="$1" out=''
+    out="$(bamboo_ufw status 2>/dev/null)" || out=''
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out" | grep -qE "^${port}(/tcp)?[[:space:]]+ALLOW" && return 0
+    return 1
+}
+
 fw_allow_port() {
     local port="$1" proto="${2:-tcp}"
     if bamboo_is_dry_run; then

@@ -30,7 +30,16 @@ packages are skipped.
 What it does, in order:
 
 1. Verifies the OS is Ubuntu 22.04+ (`--force` overrides).
-2. `apt-get update`, then installs only the missing packages from:
+2. **Swap** — if the machine has no swap at all, creates a RAM-sized swap file
+   (capped at 8 GB, or `BAMBOO_SWAP=512M`/`1G`), guarded by a free-space check,
+   and makes it persistent in `/etc/fstab` (which is backed up first). Anything
+   already active is left alone. `--no-swap` skips this step.
+3. **OS upgrade** — `apt-get -y upgrade` with `--force-confold` (your config files
+   are kept) and `NEEDRESTART_MODE=l` (no service is restarted behind your back).
+   Skipped when there is nothing to upgrade or the disk is nearly full.
+   `--no-upgrade` skips it, `--dist-upgrade` uses `full-upgrade` instead. The tool
+   never reboots — if a reboot is required it says so, and names the packages.
+4. `apt-get update`, then installs only the missing packages from:
    `nginx`, `certbot`, `fail2ban`, `ufw`, `curl`, `openssl`, `dnsutils`,
    `ca-certificates`. Uses `DPkg::Lock::Timeout=600` so it waits instead of
    failing on a busy apt lock.
@@ -47,7 +56,13 @@ What it does, in order:
 8. Writes `/etc/bamboo-site/config` with defaults (existing values are kept).
 
 Useful flags: `--email` stores a default Let's Encrypt contact;
-`--no-ufw` leaves the firewall untouched.
+`--no-ufw` leaves the firewall untouched; `--no-upgrade`/`--dist-upgrade` and
+`--no-swap` control the two steps above. All of them can also be set permanently
+in `/etc/bamboo-site/config` (`BAMBOO_OS_UPGRADE`, `BAMBOO_SWAP`,
+`BAMBOO_SWAP_FILE`).
+
+A reboot that is pending after the upgrade is only *reported* — schedule it
+yourself, e.g. `sudo reboot`.
 
 ---
 
@@ -226,6 +241,119 @@ object per site:
    "ssl_days": 89, "jail": "on", "size": "4.0K", "created": "2026-10-05",
    "docroot": "/var/www/example.com/public_html"}
 ]
+```
+
+---
+
+## `bamboo-site status`
+
+```text
+bamboo-site status [--json | --quiet | --strict]
+```
+
+Read-only health report for the whole server. Runs without root, but checks that
+need root (UFW rules, Fail2ban jails) are reported as unknown instead of failing.
+
+What it checks:
+
+- **System** — distribution and kernel version, uptime, whether a reboot is pending.
+- **Resources** — RAM, active swap (warns when there is none), disk usage on `/`.
+- **Services** — nginx, fail2ban, ufw, certbot.timer: running *and* enabled at boot.
+- **nginx** — `nginx -t`, the shared rate-limit zones, and whether ports 80/443 listen.
+- **Firewall** — UFW active, with ALLOW rules for the SSH port in use, 80 and 443.
+- **Fail2ban** — configuration validity, the sshd jail, all four jails of every
+  managed domain, and how many IPs are currently banned.
+- **Certificates** — per domain: valid / expiring (warning under 21 days, problem
+  under 7), or SSL still pending.
+- **Sites and CLI** — nginx mode per domain (https / http / disabled), the CLI
+  version it is running from, and whether the configuration file exists.
+
+Exit code: **0 when no problems were found, 1 when there is at least one**.
+Warnings alone keep exit code 0 unless `--strict` is passed.
+
+`--quiet` prints only warnings and problems, one per line, which makes it usable
+from cron or any monitoring agent:
+
+```bash
+sudo bamboo-site status --quiet || echo "attention needed"
+```
+
+`--json` prints the same data as JSON (`ok`/`warnings`/`problems` counters, a
+`checks` array and a `sites` array) for dashboards:
+
+```json
+{"host": "web1", "version": "0.2.0", "checked_at": "2026-10-05T05:00:00Z",
+ "ok": 14, "warnings": 1, "problems": 0,
+ "checks": [{"level": "warn", "id": "resource.swap", "message": "No swap is active ..."}],
+ "sites": [{"domain": "example.com", "mode": "https", "ssl_days": 89}]}
+```
+
+---
+
+## `bamboo-site reinstall`
+
+```text
+sudo bamboo-site reinstall [--from <dir>] [--repo <o/name>] [--branch <name>] [--rollback]
+```
+
+Replaces the installed CLI with a newer copy. This is the upgrade path for a
+server running an older version; it never touches sites, certificates, services or
+`/etc/bamboo-site`.
+
+1. Takes the new version from `--from <dir>` (a local checkout) or downloads
+   `codeload.github.com/<repo>/tar.gz/refs/heads/<branch>` (defaults: this repo,
+   `main`; override with `--repo` / `--branch`).
+2. Validates the staged copy: entry point present, a version file, and the staged
+   CLI is actually executed (with `BAMBOO_ROOT` pinned to the staging directory)
+   and must report the expected version.
+3. Copies the current installation to `<install-dir>.bak` so the change can be
+   undone, then installs by delegating to the staged `install.sh --local`, which
+   is the same code path the bootstrap installer uses.
+4. Verifies the freshly installed CLI runs and reports the new version. If
+   anything fails, the previous copy is restored automatically and the command
+   exits 1.
+
+`--rollback` swaps the backup back in and keeps the newer copy as the new
+rollback, so you can move back and forth. `--dry-run` prints the whole plan
+(source, versions, paths) and changes nothing.
+
+```bash
+sudo bamboo-site reinstall                    # upgrade to the latest main
+sudo bamboo-site reinstall --branch v0.3.0    # a specific branch/tag
+sudo bamboo-site reinstall --from /root/bamboo-site-checkout
+sudo bamboo-site reinstall --rollback
+```
+
+---
+
+## `bamboo-site uninstall`
+
+```text
+sudo bamboo-site uninstall [--purge] [--sites]
+```
+
+Removes the CLI from the server. By default **only** the symlink in
+`/usr/local/bin` and the program files in `/opt/bamboo-site` are removed:
+
+- Sites in `/var/www`, certificates, `/etc/bamboo-site` and the operating-system
+  packages are left completely untouched, and the command prints the exact
+  `apt-get remove --purge …` line in case you want them gone too.
+- `--purge` additionally removes `/etc/bamboo-site` and `/var/log/bamboo-site.log`.
+- `--sites` additionally deletes every managed site through the same pipeline as
+  `delete` (nginx config, Fail2ban jail, certificate, workspace). It lists them
+  first and requires `--yes` (or an interactive confirmation); without a terminal
+  and without `--yes` it refuses.
+
+Safety: the target must be exactly the configured install directory, the
+directory must actually look like a Bamboo-Site installation, and the program
+files are removed by a short-lived detached script — a running copy cannot
+reliably delete the tree it is still reading from. `--dry-run` prints the plan and
+removes nothing.
+
+```bash
+sudo bamboo-site uninstall                                  # CLI only
+sudo bamboo-site uninstall --purge                          # + config and log
+sudo bamboo-site uninstall --purge --sites --yes            # everything we manage
 ```
 
 ---

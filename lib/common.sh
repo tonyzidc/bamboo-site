@@ -46,6 +46,7 @@ fi
 
 BAMBOO_PROG_NAME="${BAMBOO_PROG_NAME:-bamboo-site}"
 BAMBOO_REPO="${BAMBOO_REPO:-tonyzidc/bamboo-site}"
+BAMBOO_BRANCH="${BAMBOO_BRANCH:-main}"
 # Printed by the install/help commands.
 # shellcheck disable=SC2034
 BAMBOO_REPO_URL="https://github.com/$BAMBOO_REPO"
@@ -81,6 +82,7 @@ BAMBOO_F2B_DIR="${BAMBOO_F2B_DIR:-/etc/fail2ban}"
 BAMBOO_F2B_JAILD="${BAMBOO_F2B_JAILD:-$BAMBOO_F2B_DIR/jail.d}"
 BAMBOO_F2B_FILTERD="${BAMBOO_F2B_FILTERD:-$BAMBOO_F2B_DIR/filter.d}"
 
+BAMBOO_FSTAB="${BAMBOO_FSTAB:-/etc/fstab}"
 BAMBOO_WEB_USER="${BAMBOO_WEB_USER:-www-data}"
 BAMBOO_WEB_GROUP="${BAMBOO_WEB_GROUP:-www-data}"
 BAMBOO_LOG_GROUP="${BAMBOO_LOG_GROUP:-adm}"
@@ -96,11 +98,22 @@ BAMBOO_CERTBOT_EXTRA_ARGS_ENV="${BAMBOO_CERTBOT_EXTRA_ARGS:-}"
 BAMBOO_SSL_WWW_ENV="${BAMBOO_SSL_WWW:-}"
 # shellcheck disable=SC2034
 BAMBOO_F2B_IGNOREIP_ENV="${BAMBOO_F2B_IGNOREIP:-}"
+# shellcheck disable=SC2034
+BAMBOO_OS_UPGRADE_ENV="${BAMBOO_OS_UPGRADE:-}"
+# shellcheck disable=SC2034
+BAMBOO_SWAP_ENV="${BAMBOO_SWAP:-}"
+# shellcheck disable=SC2034
+BAMBOO_SWAP_FILE_ENV="${BAMBOO_SWAP_FILE:-}"
 
 BAMBOO_MAX_BODY_SIZE="${BAMBOO_MAX_BODY_SIZE:-64m}"
 BAMBOO_CERTBOT_EXTRA_ARGS="${BAMBOO_CERTBOT_EXTRA_ARGS:-}"
 BAMBOO_SSL_WWW="${BAMBOO_SSL_WWW:-auto}"
 BAMBOO_F2B_IGNOREIP="${BAMBOO_F2B_IGNOREIP:-}"
+BAMBOO_OS_UPGRADE="${BAMBOO_OS_UPGRADE:-auto}"
+BAMBOO_SWAP="${BAMBOO_SWAP:-auto}"
+BAMBOO_SWAP_FILE="${BAMBOO_SWAP_FILE:-/swapfile}"
+BAMBOO_SWAP_MAX_MB="${BAMBOO_SWAP_MAX_MB:-8192}"
+BAMBOO_SWAP_MIN_FREE_MB="${BAMBOO_SWAP_MIN_FREE_MB:-512}"
 BAMBOO_DEFAULT_EMAIL="${BAMBOO_DEFAULT_EMAIL:-}"
 BAMBOO_PUBLIC_IP="${BAMBOO_PUBLIC_IP:-}"
 BAMBOO_EDITOR="${BAMBOO_EDITOR:-}"
@@ -117,6 +130,12 @@ BAMBOO_TEST_DNS_A="${BAMBOO_TEST_DNS_A:-}"
 BAMBOO_TEST_PUBLIC_IP="${BAMBOO_TEST_PUBLIC_IP:-203.0.113.10}"
 BAMBOO_TEST_CERTBOT_RESULT="${BAMBOO_TEST_CERTBOT_RESULT:-0}"
 BAMBOO_TEST_CERTBOT_OUTPUT="${BAMBOO_TEST_CERTBOT_OUTPUT:-}"
+BAMBOO_TEST_RAM_MB="${BAMBOO_TEST_RAM_MB:-2048}"
+BAMBOO_TEST_DISK_FREE_MB="${BAMBOO_TEST_DISK_FREE_MB:-20480}"
+BAMBOO_TEST_SWAP_ACTIVE="${BAMBOO_TEST_SWAP_ACTIVE:-}"
+BAMBOO_TEST_OPEN_PORTS="${BAMBOO_TEST_OPEN_PORTS:-80 443}"
+BAMBOO_TEST_UPGRADE_COUNT="${BAMBOO_TEST_UPGRADE_COUNT:-3}"
+BAMBOO_TEST_REBOOT_REQUIRED="${BAMBOO_TEST_REBOOT_REQUIRED:-0}"
 BAMBOO_TEST_OS_ID="${BAMBOO_TEST_OS_ID:-ubuntu}"
 BAMBOO_TEST_OS_VERSION="${BAMBOO_TEST_OS_VERSION:-22.04}"
 
@@ -219,7 +238,12 @@ bamboo_nginx_bin()    { nginx "$@"; }
 bamboo_certbot()      { certbot "$@"; }
 bamboo_f2b_client()   { fail2ban-client "$@"; }
 bamboo_ufw()          { ufw "$@"; }
-bamboo_apt_get()      { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+bamboo_apt_get()      { DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+bamboo_swapon()       { swapon "$@"; }
+bamboo_swapoff()      { swapoff "$@"; }
+bamboo_mkswap()       { mkswap "$@"; }
+bamboo_fallocate()    { fallocate "$@"; }
+bamboo_dd()           { dd "$@"; }
 bamboo_pkg_installed() { dpkg -s "$1" >/dev/null 2>&1; }
 bamboo_service_is_active() { systemctl is-active --quiet "$1"; }
 
@@ -326,6 +350,123 @@ bamboo_dir_size() {
     out="$(du -sh "$1" 2>/dev/null | cut -f1)" || out=''
     [ -n "$out" ] || out='-'
     printf '%s' "$out"
+}
+
+bamboo_fstab_path() { printf '%s' "$BAMBOO_FSTAB"; }
+
+bamboo_swap_active() {
+    # Prints one line per active swap device (empty when there is no swap).
+    local out=''
+    if bamboo_need_cmd swapon; then
+        out="$(swapon --show=NAME,SIZE --noheadings 2>/dev/null)" || out=''
+    fi
+    if [ -z "$out" ] && [ -r /proc/swaps ]; then
+        out="$(awk 'NR > 1 { print $1 " " $3 "K" }' /proc/swaps 2>/dev/null)" || out=''
+    fi
+    printf '%s' "$out"
+    return 0
+}
+
+bamboo_mem_total_mb() {
+    local kb='' out=''
+    if [ -r /proc/meminfo ]; then
+        kb="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)" || kb=''
+    fi
+    if [ -z "$kb" ] && bamboo_need_cmd free; then
+        kb="$(free -k 2>/dev/null | awk '/^Mem:/{print $2; exit}')" || kb=''
+    fi
+    case "$kb" in
+        ''|*[!0-9]*) printf ''; return 0 ;;
+    esac
+    out=$(( kb / 1024 ))
+    printf '%s' "$out"
+    return 0
+}
+
+bamboo_disk_free_mb() {
+    # Free space in MB on the filesystem holding <path> (empty when unknown).
+    local path="${1:-/}" out=''
+    if bamboo_need_cmd df; then
+        out="$(df -Pm "$path" 2>/dev/null | awk 'NR == 2 { print $4 }')" || out=''
+    fi
+    case "$out" in
+        ''|*[!0-9]*) printf '' ;;
+        *) printf '%s' "$out" ;;
+    esac
+    return 0
+}
+
+bamboo_disk_total_mb() {
+    # Total size in MB of the filesystem holding <path> (empty when unknown).
+    local path="${1:-/}" out=''
+    if bamboo_need_cmd df; then
+        out="$(df -Pm "$path" 2>/dev/null | awk 'NR == 2 { print $2 }')" || out=''
+    fi
+    case "$out" in
+        ''|*[!0-9]*) printf '' ;;
+        *) printf '%s' "$out" ;;
+    esac
+    return 0
+}
+
+bamboo_service_is_enabled() {
+    systemctl is-enabled --quiet "$1" 2>/dev/null
+}
+
+bamboo_reboot_required() {
+    [ -f "${BAMBOO_REBOOT_REQUIRED_FILE:-/var/run/reboot-required}" ]
+}
+
+bamboo_reboot_required_pkgs() {
+    local file="${BAMBOO_REBOOT_REQUIRED_FILE:-/var/run/reboot-required}.pkgs"
+    [ -r "$file" ] || return 0
+    sort -u "$file" 2>/dev/null | tr '\n' ' ' | sed -e 's/[[:space:]]*$//'
+    return 0
+}
+
+bamboo_uptime_human() {
+    local secs='' out=''
+    if [ -r /proc/uptime ]; then
+        secs="$(awk '{ printf "%d", $1 }' /proc/uptime 2>/dev/null)" || secs=''
+    fi
+    case "$secs" in
+        ''|*[!0-9]*) printf ''; return 0 ;;
+    esac
+    out="$(( secs / 86400 ))d $(( (secs % 86400) / 3600 ))h $(( (secs % 3600) / 60 ))m"
+    printf '%s' "$out"
+    return 0
+}
+
+bamboo_port_listening() {
+    # True when a TCP port is in the LISTEN state.
+    local port="$1" out=''
+    if bamboo_need_cmd ss; then
+        out="$(ss -ltn 2>/dev/null)" || out=''
+    elif bamboo_need_cmd netstat; then
+        out="$(netstat -ltn 2>/dev/null)" || out=''
+    else
+        return 1
+    fi
+    printf '%s\n' "$out" | awk -v p=":${port}\$" 'NR > 1 && $4 ~ p { found = 1 } END { exit !found }'
+}
+
+bamboo_shell_quote() {
+    # Single-quotes a value for safe inclusion in a generated script.
+    printf "'%s'" "$(printf '%s' "$1" | sed -e "s/'/'\\\\''/g")"
+}
+
+bamboo_json_escape() {
+    printf '%s' "$1" | awk '
+        BEGIN { ORS = "" }
+        {
+            gsub(/\\/, "\\\\")
+            gsub(/"/, "\\\"")
+            gsub(/\t/, "\\t")
+            gsub(/\r/, "")
+            if (NR > 1) printf "\\n"
+            printf "%s", $0
+        }'
+    return 0
 }
 
 bamboo_version_ge() {
@@ -544,6 +685,66 @@ bamboo_assert_dir_writable() {
     local dir="$1"
     mkdir -p "$dir" 2>/dev/null || die "Unable to create directory: $dir"
     [ -w "$dir" ] || die "Directory is not writable: $dir"
+    return 0
+}
+
+bamboo_fetch_url() {
+    # Downloads <url> to <dest>; returns non-zero on any failure.
+    local url="$1" dest="$2"
+    if bamboo_need_cmd curl; then
+        curl -fsSL --max-time 120 "$url" -o "$dest"
+        return $?
+    fi
+    if bamboo_need_cmd wget; then
+        wget -qO "$dest" "$url"
+        return $?
+    fi
+    log_error 'curl or wget is required to download files.'
+    return 1
+}
+
+bamboo_installed_version() {
+    local dir="$1"
+    [ -n "$dir" ] || return 0
+    if [ -r "$dir/VERSION" ]; then
+        tr -d '[:space:]' <"$dir/VERSION"
+    fi
+    return 0
+}
+
+bamboo_assert_safe_install_dir() {
+    local dir="$1"
+    [ -n "$dir" ] || die 'Internal error: refusing to operate on an empty path.'
+    case "$dir" in
+        /|/usr|/usr/local|/opt|/etc|/var|/root|/home)
+            die "Refusing to operate on the shared directory '$dir'."
+            ;;
+    esac
+    case "$dir" in
+        */*/*) ;;
+        *) die "The install directory must have at least two path components: '$dir'" ;;
+    esac
+    return 0
+}
+
+bamboo_schedule_tree_removal() {
+    # A running CLI cannot reliably delete the tree it is still reading, so the
+    # final removal runs detached once this process has exited. The script is
+    # written outside BAMBOO_TMPDIR, which the EXIT trap removes.
+    local target="$1" script='' quoted_target='' quoted_script=''
+    script="${TMPDIR:-/tmp}/bamboo-uninstall.$$.sh"
+    quoted_target="$(bamboo_shell_quote "$target")"
+    quoted_script="$(bamboo_shell_quote "$script")"
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf '# Deferred removal scheduled by bamboo-site uninstall.\n'
+        printf 'sleep 1\n'
+        printf 'rm -rf %s\n' "$quoted_target"
+        printf 'rm -f %s\n' "$quoted_script"
+    } >"$script" || { log_warn "Unable to schedule the removal of $target."; return 1; }
+    bamboo_chmod 0700 "$script" 2>/dev/null || true
+    # fd 9 is the concurrency lock; do not hand it to the child.
+    nohup bash "$script" >/dev/null 2>&1 9>&- &
     return 0
 }
 

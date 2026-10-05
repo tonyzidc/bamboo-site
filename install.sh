@@ -20,6 +20,8 @@ RUN_DEPS='prompt'
 ASSUME_YES=0
 UNINSTALL=0
 EMAIL=''
+UPGRADE_FLAG=''
+SWAP_FLAG=''
 
 log()  { printf '  %s\n' "$*" >&2; }
 step() { printf '\n==> %s\n' "$*" >&2; }
@@ -58,6 +60,9 @@ Options:
   --local               Install from this checkout instead of downloading
   --email <address>     Default Let's Encrypt email for 'bamboo-site install'
   --no-deps             Do not offer to install server packages
+  --no-upgrade          (forwarded) skip the automatic OS upgrade
+  --dist-upgrade        (forwarded) use apt-get full-upgrade
+  --no-swap             (forwarded) do not create a swap file
   --uninstall           Remove the CLI (sites, certificates and config are kept)
   -y, --yes             Never prompt
   -h, --help            Show this help
@@ -132,6 +137,10 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --local) LOCAL=1 ;;
+        --upgrade) UPGRADE_FLAG='--upgrade' ;;
+        --no-upgrade) UPGRADE_FLAG='--no-upgrade' ;;
+        --dist-upgrade) UPGRADE_FLAG='--dist-upgrade' ;;
+        --no-swap) SWAP_FLAG='--no-swap' ;;
         --no-deps) RUN_DEPS='no' ;;
         --uninstall) UNINSTALL=1 ;;
         -y|--yes) ASSUME_YES=1 ;;
@@ -251,7 +260,11 @@ mkdir -p "$BIN_DIR"
 ln -sfn "$INSTALL_DIR/bin/bamboo-site" "$BIN_DIR/bamboo-site" || die "Unable to create $BIN_DIR/bamboo-site"
 ok "Linked $BIN_DIR/bamboo-site"
 
-version="$("$BIN_DIR/bamboo-site" version 2>/dev/null)" || die 'The installed CLI failed to run.'
+# BAMBOO_ROOT is pinned so the smoke test reads the copy just installed, even
+# when this script was called from a context that already exports BAMBOO_ROOT
+# (for example `bamboo-site reinstall`).
+version="$(BAMBOO_ROOT="$INSTALL_DIR" "$BIN_DIR/bamboo-site" version 2>/dev/null)" \
+    || die 'The installed CLI failed to run.'
 ok "Installed: $version"
 
 case ":$PATH:" in
@@ -270,6 +283,12 @@ if [ "$RUN_DEPS" != 'no' ]; then
         fi
         if [ -n "$EMAIL" ]; then
             deps_args+=(--email "$EMAIL")
+        fi
+        if [ -n "$UPGRADE_FLAG" ]; then
+            deps_args+=("$UPGRADE_FLAG")
+        fi
+        if [ -n "$SWAP_FLAG" ]; then
+            deps_args+=("$SWAP_FLAG")
         fi
         "$BIN_DIR/bamboo-site" "${deps_args[@]}"
     else
